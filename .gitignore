@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.env
+*.log
+.streamlit/secrets.toml
+
+# Never commit exposure data. Only the synthetic sample is allowed.
+*.csv
+*.xlsx
+!sample_data/sample_sov.csv
