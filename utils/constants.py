@@ -155,3 +155,13 @@ STATE_NAME_TO_ABBR = dict(_STATES)
 STATE_NAME_TO_ABBR.update({"washington dc": "DC", "washington d.c.": "DC", "d.c.": "DC",
                            "dc": "DC", "district of columbia (dc)": "DC"})
 VALID_STATE_CODES = frozenset(_STATES.values())
+
+# ---------------------------------------------------------------------------
+# Map settings
+# ---------------------------------------------------------------------------
+# Default background for the Map and Single Address tabs. Online styles load tiles in the user's browser
+# from a public provider (no exposure data is sent; the viewed area is visible to the provider).
+# Set to "Offline: state outlines only" for a deployment that must make no third-party requests.
+DEFAULT_MAP_STYLE = "Streets (OpenStreetMap)"
+FOLIUM_AUTO_MAX_POINTS = 5_000       # Auto engine: Folium up to here, pydeck above
+FOLIUM_HARD_MAX_POINTS = 10_000      # never draw more than this with Folium (sampled beyond)

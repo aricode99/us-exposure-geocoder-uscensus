@@ -141,6 +141,28 @@ def view_state_for(plot: pd.DataFrame) -> Dict[str, float]:
     return {"latitude": float((lat_lo + lat_hi) / 2), "longitude": float((lon_lo + lon_hi) / 2), "zoom": zoom}
 
 
+def osm_url(lat, lon) -> Optional[str]:
+    """OpenStreetMap link centred on a coordinate (None if missing). Only coordinates are in the URL."""
+    if lat is None or lon is None or pd.isna(lat) or pd.isna(lon):
+        return None
+    return f"https://www.openstreetmap.org/?mlat={lat:.6f}&mlon={lon:.6f}#map=18/{lat:.6f}/{lon:.6f}"
+
+
+def google_maps_url(lat, lon) -> Optional[str]:
+    """Google Maps link for a coordinate (None if missing). Only coordinates are in the URL."""
+    if lat is None or lon is None or pd.isna(lat) or pd.isna(lon):
+        return None
+    return f"https://www.google.com/maps?q={lat:.6f},{lon:.6f}&z=18"
+
+
+def with_map_links(df: pd.DataFrame) -> pd.DataFrame:
+    """Copy of df with OpenStreetMap / GoogleMaps link columns built from Latitude/Longitude."""
+    out = df.copy()
+    out["OpenStreetMap"] = [osm_url(a, b) for a, b in zip(out["Latitude"], out["Longitude"])]
+    out["GoogleMaps"] = [google_maps_url(a, b) for a, b in zip(out["Latitude"], out["Longitude"])]
+    return out
+
+
 def qa_review_frame(view: pd.DataFrame, qa_statuses=None, states=None, match_statuses=None) -> pd.DataFrame:
     """Rows needing attention (anything not a clean HIGH match), optionally filtered."""
     df = view[view["QAStatus"] != C.QA_HIGH]
