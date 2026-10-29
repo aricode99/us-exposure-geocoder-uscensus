@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 - match levels, confidence bands, analyst edits
+- **Match level** fields (`GeoMatchLevelCode`, `EnhancedGeoMatchLevelCode`, `GeoMatchLevel`) on every record, in the
+  QA table and on the Dashboard.
+- **Confidence bands** (`GeocodeConfidence`, `ConfidenceBasis`): High / Moderate / Low / Very low / Analyst-set / Not geocoded,
+  from the match level plus consistency checks (ZIP-centroid distance, county agreement, shared coordinates, address differences).
+- **Street cleanup:** a city / state / county / ZIP pasted into the Street column is removed from `CleanStreet`.
+- **QA Review edits:** edit addresses and re-geocode selected rows; set manual coordinates with a required reason; edit log and
+  an "Analyst-edited rows" download. New QA status MANUAL and resolution MANUAL_OVERRIDE.
+- QA Review gets a Confidence filter and the new columns.
+- Tests: 211. Browser-verified: dashboard tables, QA table, editor, re-geocode flow. Manual-coordinate entry is covered by unit tests only.
+
 ## 0.3.1
 - **Fixed:** map hover tooltips were a single unwrapped line and were clipped at the edge of small map windows. They now wrap (max 300 px) and flip side near the edge. Verified in a 520 px-wide window.
 

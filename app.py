@@ -12,11 +12,13 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
 from streamlit_folium import st_folium
 
+from modules import edits as ed
 from modules import file_handler as fh
 from modules import maps
 from modules.address_cleaner import clean_dataframe
@@ -36,13 +38,14 @@ from utils import constants as C
 from utils.logging_config import setup_logging
 
 APP_NAME = "US Exposure Geocoding & QA Tool"
-APP_VERSION = "0.3.1 (test build)"
+APP_VERSION = "0.4.0 (test build)"
 
 st.set_page_config(page_title=APP_NAME, page_icon="📍", layout="wide")
 setup_logging()
 
 NOT_MAPPED = "— not mapped —"
 MAX_TABLE_ROWS = 5_000
+MAX_EDIT_ROWS = 300
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +106,14 @@ def _kpi(col, label: str, item: dict, show_pct: bool = True) -> None:
 
 def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+
+
+def _commit(new_result) -> None:
+    """Replace the current result (after an analyst edit) and rebuild everything derived from it."""
+    st.session_state.result = new_result
+    st.session_state.result_id = uuid.uuid4().hex          # new key: caches and widget state restart cleanly
+    st.session_state.view = build_view_frame(new_result)
+    st.session_state.summary = summarize(new_result.geo)
 
 
 # ---------------------------------------------------------------------------
@@ -348,11 +359,12 @@ if page == "dash":
         _kpi(r1[2], "Exact Matches", o["Exact Matches"])
         _kpi(r1[3], "Non-Exact Matches", o["Non-Exact Matches"])
         _kpi(r1[4], "Tie", o["Tie"])
-        r2 = st.columns(4)
+        r2 = st.columns(5)
         _kpi(r2[0], "No Match", o["No Match"])
         _kpi(r2[1], "Fallback (area centroid)", o["Fallback (area centroid)"])
-        _kpi(r2[2], "Out of Scope", o["Out of Scope"])
-        _kpi(r2[3], "Other Failed / Not Submitted", o["Other Failed / Not Submitted"])
+        _kpi(r2[2], "Analyst-set Coordinates", o["Analyst-set Coordinates"])
+        _kpi(r2[3], "Out of Scope", o["Out of Scope"])
+        _kpi(r2[4], "Other Failed / Not Submitted", o["Other Failed / Not Submitted"])
         st.caption("“Successfully Geocoded” means a street-level Census match with coordinates. "
                    "Fallback centroids are never counted as geocoded.")
 
@@ -362,6 +374,24 @@ if page == "dash":
             _kpi(col, status.replace("_", " ").title() if status == C.QA_OUT_OF_SCOPE else status,
                  summ["qa"][status])
         st.caption(C.QA_DISCLAIMER)
+
+        st.markdown("**Geocode match level**")
+        lvl_df = pd.DataFrame([{"Match level": k, "Locations": v["count"], "Share (%)": v["pct"]}
+                               for k, v in summ["match_levels"].items()])
+        l1, l2 = st.columns([1, 1])
+        l1.dataframe(lvl_df, hide_index=True)
+        l2.bar_chart(lvl_df.set_index("Match level")["Locations"])
+        st.caption("Exact Address = Census exact match along a street segment. Relaxed Address = Census non-exact "
+                   "match (street components or house number relaxed). Postal Code, City and County centroid are "
+                   "area fallbacks, never site locations.")
+
+        st.markdown("**Geocode confidence** (application-derived band)")
+        conf_df = pd.DataFrame([{"Confidence": k, "Locations": v["count"], "Share (%)": v["pct"]}
+                                for k, v in summ["confidence"].items()])
+        c1_, c2_ = st.columns([1, 1])
+        c1_.dataframe(conf_df, hide_index=True)
+        c2_.bar_chart(conf_df.set_index("Confidence")["Locations"])
+        st.caption(C.CONFIDENCE_DISCLAIMER)
 
         st.markdown("**Geocode resolution**")
         res_df = pd.DataFrame([{"Resolution": k, "Locations": v["count"], "Share (%)": v["pct"]}
@@ -488,6 +518,9 @@ if page == "qa":
         st.info("Run geocoding to review exceptions.")
     else:
         rid = st.session_state.result_id
+        flash = st.session_state.pop("edit_flash", None)
+        if flash:
+            getattr(st, flash[0])(flash[1])
         base = qa_review_frame(view)
         st.caption("Shows everything that is not a clean HIGH match: non-exact matches, ties, no matches, "
                    "address mismatches, missing coordinates, fallbacks and out-of-scope rows. "
@@ -498,16 +531,20 @@ if page == "qa":
             st_opts = sorted(s for s in base["CleanState"].dropna().unique() if s) or []
             ms_opts = sorted(base["MatchStatus"].unique())
             qa_opts = [s for s in C.QA_ORDER if s in set(base["QAStatus"])]
-            q1, q2, q3 = st.columns(3)
+            conf_opts = [s for s in C.CONF_ORDER if s in set(base["GeocodeConfidence"])]
+            q1, q2, q3, q4 = st.columns(4)
             sel_states = q1.multiselect("State", st_opts, default=st_opts, key=f"qa_state_{rid}")
             sel_ms = q2.multiselect("Match status", ms_opts, default=ms_opts, key=f"qa_ms_{rid}")
             sel_qa = q3.multiselect("QA status", qa_opts, default=qa_opts, key=f"qa_qa_{rid}")
+            sel_conf = q4.multiselect("Confidence", conf_opts, default=conf_opts, key=f"qa_conf_{rid}")
             states_arg = None if set(sel_states) == set(st_opts) else sel_states
             filtered = qa_review_frame(view, sel_qa, states_arg, sel_ms)
+            filtered = filtered[filtered["GeocodeConfidence"].isin(sel_conf)]
 
             st.write(f"**{len(filtered):,}** of {len(base):,} exception records")
             show_cols = ["LocationID", "OriginalAddress", "CensusMatchedAddress", "MatchStatus", "QAStatus",
-                         "QAReason", "GeocodeResolution", "Latitude", "Longitude", "CleanFlags"]
+                         "GeocodeConfidence", "GeoMatchLevel", "QAReason", "ConfidenceBasis", "GeocodeResolution",
+                         "Latitude", "Longitude", "CleanFlags", "AnalystEdit"]
             st.dataframe(
                 with_map_links(filtered[show_cols].head(MAX_TABLE_ROWS)), hide_index=True,
                 column_config={
@@ -520,8 +557,72 @@ if page == "qa":
                 st.caption(f"Table limited to the first {MAX_TABLE_ROWS:,} rows; the download contains all "
                            f"{len(filtered):,}.")
 
+            # ---- analyst edits ---------------------------------------------------------------------------
+            with st.expander("✏ Edit addresses or set coordinates", expanded=False):
+                st.caption("Correct an address and re-geocode it, or type coordinates you have verified (for example "
+                           "from the Open in OSM / Google link). Your original SOV values are never changed; every "
+                           "change is logged on the row and in a downloadable edit log. Edited addresses are sent to "
+                           "the Census Geocoder. Re-geocoding uses the Geocoding settings in the sidebar.")
+                edit_rows = filtered.head(MAX_EDIT_ROWS)
+                if len(filtered) > MAX_EDIT_ROWS:
+                    st.caption(f"Showing the first {MAX_EDIT_ROWS} of {len(filtered):,} rows. Narrow the filters "
+                               "above to reach others.")
+                source = pd.DataFrame({
+                    "GeocodeRowID": edit_rows["GeocodeRowID"].astype(str).values,
+                    "LocationID": edit_rows["LocationID"].astype(str).values,
+                    "QAStatus": edit_rows["QAStatus"].values,
+                    "Street": edit_rows["CleanStreet"].fillna("").values,
+                    "City": edit_rows["CleanCity"].fillna("").values,
+                    "State": edit_rows["CleanState"].fillna("").values,
+                    "ZIP": edit_rows["CleanZIP"].fillna("").values,
+                    "Set latitude": np.nan, "Set longitude": np.nan, "Note": "",
+                })
+                edited = st.data_editor(
+                    source, hide_index=True, key=f"qa_edit_{rid}", num_rows="fixed",
+                    disabled=["GeocodeRowID", "LocationID", "QAStatus"],
+                    column_config={
+                        "Set latitude": st.column_config.NumberColumn(format="%.6f", help="Decimal degrees"),
+                        "Set longitude": st.column_config.NumberColumn(format="%.6f", help="Decimal degrees (negative in the U.S.)"),
+                        "Note": st.column_config.TextColumn(help="Required for manual coordinates; optional for address edits"),
+                    })
+                addr_cols = ["Street", "City", "State", "ZIP"]
+                changed_addr = (edited[addr_cols].fillna("").astype(str).values
+                                != source[addr_cols].astype(str).values).any(axis=1)
+                has_coords = edited["Set latitude"].notna() | edited["Set longitude"].notna()
+                b1, b2 = st.columns(2)
+                if b1.button(f"Re-geocode {int(changed_addr.sum())} edited address(es)", disabled=not changed_addr.any(),
+                             key=f"qa_regeo_{rid}"):
+                    sub = edited[changed_addr]
+                    bar = st.progress(0.0, text="Re-geocoding edited rows")
+                    new = ed.regeocode_rows(
+                        result, sub[["GeocodeRowID", "Street", "City", "State", "ZIP", "Note"]], options,
+                        progress=lambda stg, frac, det: bar.progress(min(max(frac, 0.0), 1.0), text=f"{stg}: {det}"))
+                    _commit(new)
+                    st.session_state.edit_flash = ("success", f"Re-geocoded {len(sub)} row(s). See the edit log for details.")
+                    st.rerun()
+                if b2.button(f"Apply {int(has_coords.sum())} manual coordinate(s)", disabled=not has_coords.any(),
+                             key=f"qa_manual_{rid}"):
+                    sub = edited[has_coords].rename(columns={"Set latitude": "Latitude", "Set longitude": "Longitude"})
+                    new, errors = ed.set_coordinates(result, sub[["GeocodeRowID", "Latitude", "Longitude", "Note"]])
+                    applied = len(sub) - len(errors)
+                    if applied:
+                        _commit(new)
+                    if errors:
+                        detail = "; ".join(f"row {k}: {v}" for k, v in list(errors.items())[:10])
+                        st.session_state.edit_flash = ("warning", f"Applied {applied}; skipped {len(errors)} ({detail})")
+                    else:
+                        st.session_state.edit_flash = ("success", f"Applied {applied} manual coordinate(s).")
+                    st.rerun()
+                if result.edit_log:
+                    log_df = ed.edit_log_frame(result)
+                    st.markdown(f"**Edit log** · {len(log_df):,} change(s)")
+                    st.dataframe(log_df, hide_index=True)
+                    st.download_button("⬇ Download edit log (CSV)", fh.to_csv_bytes(log_df),
+                                       file_name=f"edit_log_{_stamp()}.csv", mime="text/csv", on_click="ignore",
+                                       key=f"edit_log_dl_{rid}")
+
             mask = result.geo.index.isin(filtered.index)
-            key = f"{sorted(sel_states)}|{sorted(sel_ms)}|{sorted(sel_qa)}"
+            key = f"{sorted(sel_states)}|{sorted(sel_ms)}|{sorted(sel_qa)}|{sorted(sel_conf)}"
             fmt = st.radio("Format", ["CSV", "XLSX"], horizontal=True, key=f"qa_fmt_{rid}")
             payload = make_file(rid, "qa_exceptions", fmt, key, result, pd.Series(mask, index=result.geo.index))
             st.download_button(
@@ -555,6 +656,8 @@ if page == "dl":
              "No coordinates: No_Match, Tie, insufficient address, out of scope."),
             ("Fallback locations (area centroids)", "fallback", result.mask_fallback(),
              "ZIP / city / county centroids. Not suitable for site-level hazard modelling."),
+            ("Analyst-edited rows", "edited", result.mask_edited(),
+             "Rows whose address was corrected and re-geocoded, or whose coordinates were set by an analyst."),
         ]
         for label, code, mask, helptext in subsets:
             count = len(result.geo) if mask is None else int(mask.sum())
@@ -572,6 +675,12 @@ if page == "dl":
                     key=f"dl_{code}_{fmt}_{rid}", on_click="ignore")
             except fh.FileReadError as exc:
                 c2.error(str(exc))
+        if result.edit_log:
+            e1, e2 = st.columns([3, 1])
+            e1.markdown(f"**Edit log** · {len(result.edit_log):,} change(s)  \nWhat was changed, before and after values, time and the reason given.")
+            e2.download_button("⬇ CSV", fh.to_csv_bytes(ed.edit_log_frame(result)),
+                               file_name=f"{stem}_edit_log_{_stamp()}.csv", mime="text/csv",
+                               key=f"dl_editlog_{rid}", on_click="ignore")
 
 # ===========================================================================
 # Single address
@@ -654,6 +763,34 @@ Address comparison never lowers a match below REVIEW. Every applied rule is writ
 * **FALLBACK** – no usable street (or PO Box): the centroid of the ZIP code tabulation area, else the place
   (city + state), else the county is used. {C.FALLBACK_DISCLAIMER}
 * **OUT_OF_SCOPE** – Puerto Rico and U.S. territories (not supported in this version).
+
+#### Geocode match level
+| Result | Code / enhanced code | Label |
+|---|---|---|
+| Census Exact | ADDR / SEGI | Exact Address |
+| Census Non_Exact, house number inside the matched range | RLXA / SEGI | Relaxed Address |
+| Census Non_Exact, house number differs from the matched one | RLXA / STRI | Relaxed Address |
+| ZIP centroid fallback | POST / POST | Postal Code centroid |
+| City centroid fallback | CITY / CITY | City centroid |
+| County centroid fallback | CNTY / COUNTY | County centroid |
+| Tie, No_Match, not submitted, out of scope | NONE / NONE | None |
+| Analyst-set coordinates | MANL / MANL | Manual (analyst-set) |
+
+Census reports only Exact / Non_Exact; the house-number split is inferred by comparing the input and matched
+house numbers.
+
+#### Geocode confidence
+{C.CONFIDENCE_DISCLAIMER} Bands: **High**, **Moderate**, **Low**, **Very low**, plus **Analyst-set** and
+**Not geocoded**. A relaxed match is never High. Area centroids are Low (postal) or Very low (city, county).
+Checks that lower a Census match: state, ZIP, city, house number or street name differs from the input; point
+outside the state's plausible area; point more than 75 km from the ZIP centroid; Census county differs from the
+SOV county; the same point assigned to a different street. `ConfidenceBasis` lists what applied.
+
+#### Analyst edits
+In **QA Review** you can correct an address and re-geocode it, or enter verified coordinates with a reason.
+Original SOV values are never changed. Edited rows carry `AnalystEdit`, `AnalystEditNote`,
+`AnalystEditTimestamp` and `AnalystEditCount`, and every change is in the downloadable edit log.
+Manual coordinates are labelled MANUAL_OVERRIDE and are not counted as Census results.
 
 #### Resolution fields
 `GeocodeResolution` = how the coordinate was produced ({', '.join(C.RESOLUTION_ORDER)}).
