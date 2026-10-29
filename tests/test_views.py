@@ -74,3 +74,20 @@ def test_qa_review_excludes_high_and_applies_filters():
     assert C.QA_HIGH not in set(base["QAStatus"]) and len(base) == 5
     assert set(qa_review_frame(v, qa_statuses=[C.QA_FAILED])["MatchStatus"]) == {"No_Match"}
     assert len(qa_review_frame(v, match_statuses=["Tie"])) == 1
+
+
+def test_state_outline_is_bundled_and_valid():
+    from modules.views import load_state_outline
+    g = load_state_outline()
+    assert g is not None and g["type"] == "FeatureCollection"
+    states = {f["properties"]["state"] for f in g["features"]}
+    assert {"TX", "FL", "SC", "DC", "AK", "HI"} <= states and len(states) >= 51
+    assert all(f["geometry"]["type"] in ("Polygon", "MultiPolygon") for f in g["features"])
+
+
+def test_state_outline_missing_file_returns_none(tmp_path, monkeypatch):
+    import modules.views as v
+    v.load_state_outline.cache_clear()
+    monkeypatch.setattr(v, "STATE_OUTLINE_PATH", tmp_path / "nope.geojson")
+    assert v.load_state_outline() is None
+    v.load_state_outline.cache_clear()

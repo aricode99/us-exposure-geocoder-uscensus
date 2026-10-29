@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import html
+import json
 import math
+from functools import lru_cache
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -10,6 +13,22 @@ import pandas as pd
 
 from modules.pipeline import PipelineResult
 from utils import constants as C
+
+STATE_OUTLINE_PATH = Path(__file__).resolve().parents[1] / "data" / "reference" / "us_states.geojson"
+
+
+@lru_cache(maxsize=1)
+def load_state_outline() -> Optional[dict]:
+    """Bundled U.S. state boundaries (GeoJSON) used as an offline map background.
+
+    Returns None if the file is missing or unreadable so the map still draws the points.
+    """
+    try:
+        data = json.loads(STATE_OUTLINE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("features") else None
+
 
 QA_COLORS: Dict[str, List[int]] = {
     C.QA_HIGH: [34, 139, 34, 200],
