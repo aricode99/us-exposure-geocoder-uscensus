@@ -36,7 +36,7 @@ from utils import constants as C
 from utils.logging_config import setup_logging
 
 APP_NAME = "US Exposure Geocoding & QA Tool"
-APP_VERSION = "0.3.0 (test build)"
+APP_VERSION = "0.3.1 (test build)"
 
 st.set_page_config(page_title=APP_NAME, page_icon="📍", layout="wide")
 setup_logging()

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.1
+- **Fixed:** map hover tooltips were a single unwrapped line and were clipped at the edge of small map windows. They now wrap (max 300 px) and flip side near the edge. Verified in a 520 px-wide window.
+
 ## 0.3.0 - sidebar step navigation
 - The 8 horizontal tabs are replaced by a vertical **Steps** navigator in the sidebar (workflow order, ✓ for completed
   steps, 🔒 for pages that need geocoding results) with "Next →" buttons after mapping and after geocoding.
