@@ -7,6 +7,7 @@ The only external destination for exposure data is the U.S. Census Geocoder.
 """
 from __future__ import annotations
 
+import base64
 import math
 import uuid
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ from modules.views import (
     LEGEND,
     TOOLTIP_HTML,
     build_view_frame,
+    load_state_outline,
     map_points,
     qa_review_frame,
     view_state_for,
@@ -32,12 +34,16 @@ from utils import constants as C
 from utils.logging_config import setup_logging
 
 APP_NAME = "US Exposure Geocoding & QA Tool"
-APP_VERSION = "0.1.0 (test build)"
+APP_VERSION = "0.1.1 (test build)"
 
 st.set_page_config(page_title=APP_NAME, page_icon="📍", layout="wide")
 setup_logging()
 
 NOT_MAPPED = "— not mapped —"
+# A style with no tile sources, as a data: URI, so offline mode makes no third-party requests.
+# (Streamlit falls back to Carto tiles when map_style / map_provider are simply omitted.)
+_BLANK = '{"version":8,"sources":{},"layers":[{"id":"bg","type":"background","paint":{"background-color":"#dde5ee"}}]}'
+BLANK_STYLE = "data:application/json;base64," + base64.b64encode(_BLANK.encode()).decode()
 MAX_TABLE_ROWS = 5_000
 
 
@@ -143,8 +149,8 @@ with st.sidebar:
     st.subheader("Privacy")
     st.caption("Files are processed in memory and are not saved to disk. The only external service that "
                "receives address data is the U.S. Census Geocoder. No analytics or tracking is used. "
-               "The map background tiles are loaded by your browser from a public basemap provider and "
-               "contain no exposure data (disable them in the Map tab).")
+               "The default map background (state outlines) is bundled and makes no outside requests. The optional "
+               "online basemap loads tiles from a public provider in your browser; they contain no exposure data.")
 
 options = PipelineOptions(
     chunk_size=int(chunk_size), include_geographies=include_geo, dedupe_addresses=dedupe,
@@ -370,9 +376,12 @@ with tab_map:
         max_points = g1.slider("Maximum points drawn", 1_000, 200_000, 50_000, step=1_000,
                                help="Large portfolios are randomly sampled for the map only. "
                                     "Tables and downloads always contain every record.")
-        basemap = g2.checkbox("Show basemap tiles", value=True,
-                              help="Tiles are fetched by your browser from a public map provider. "
-                                   "Untick for a plain background with no third-party requests.")
+        bg_options = ["State outlines (offline)", "Online basemap tiles", "None"]
+        background = g2.radio(
+            "Map background", bg_options, index=0, key=f"map_bg_{rid}",
+            help="State outlines are bundled with the app: no third-party requests. Online tiles come "
+                 "from a public map provider (cartocdn.com), are fetched by your browser, and may be "
+                 "blocked on corporate networks.")
 
         # a state filter on rows without a state (e.g. invalid state) must not hide them
         states_arg = None if set(sel_states) == set(state_opts) else sel_states
@@ -388,14 +397,31 @@ with tab_map:
                 "ScatterplotLayer", data=plot, get_position=["Longitude", "Latitude"],
                 get_fill_color="color", get_radius="radius", radius_units="pixels",
                 radius_min_pixels=3, radius_max_pixels=14, pickable=True, stroked=False)
+            layers = [layer]
+            outline = load_state_outline() if background == bg_options[0] else None
+            if background == bg_options[0] and outline is None:
+                st.warning("The bundled state outline file (data/reference/us_states.geojson) was not found; "
+                           "showing points only.")
+            if outline is not None:
+                outline_layer = pdk.Layer(
+                    "GeoJsonLayer", data=outline, stroked=True, filled=True, pickable=False,
+                    get_fill_color=[244, 246, 249, 255], get_line_color=[140, 150, 165, 255],
+                    line_width_min_pixels=1)
+                layers = [outline_layer, layer]
             vs = view_state_for(plot)
-            deck_kwargs = dict(map_provider="carto", map_style="light") if basemap else dict(map_style=None)
+            if background == bg_options[1]:
+                deck_kwargs = dict(map_provider="carto", map_style="light")
+            else:
+                deck_kwargs = dict(map_provider="carto", map_style=BLANK_STYLE)
             st.pydeck_chart(pdk.Deck(
-                layers=[layer],
+                layers=layers,
                 initial_view_state=pdk.ViewState(latitude=vs["latitude"], longitude=vs["longitude"],
                                                  zoom=vs["zoom"]),
                 tooltip={"html": TOOLTIP_HTML, "style": {"backgroundColor": "white", "color": "#222"}},
                 **deck_kwargs))
+            if background == bg_options[1]:
+                st.caption("If the background stays blank, your network is probably blocking "
+                           "basemaps.cartocdn.com. Switch to 'State outlines (offline)'.")
             st.markdown(" &nbsp; ".join(
                 f"<span style='color:{c}'>●</span> {n}" for n, c in LEGEND), unsafe_allow_html=True)
             st.caption("Census points are interpolated along street address ranges and are not rooftop "

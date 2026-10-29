@@ -5,7 +5,7 @@ An analyst uploads a CSV or Excel Statement of Values (SOV), maps the address co
 locations with the free **U.S. Census Bureau Geocoder**, reviews match quality, maps the portfolio and
 downloads an enriched SOV.
 
-> **Status: test build (v0.1.0).** All Census calls in the automated tests are mocked. The batch and
+> **Status: test build (v0.1.1).** All Census calls in the automated tests are mocked. The batch and
 > single-address formats were verified against the live service in October 2026 (see
 > [Census API usage](#census-api-usage)). Test with synthetic or public addresses before using real exposure data.
 
@@ -45,9 +45,9 @@ us-exposure-geocoder/
 │   └── __init__.py
 ├── utils/constants.py          URLs, limits, labels, disclaimers, state tables
 ├── utils/logging_config.py     logging that never records addresses or URLs
-├── data/reference/             Census Gazetteer tables (~1 MB) used for fallback centroids
+├── data/reference/             Census Gazetteer tables (fallback centroids) + us_states.geojson (map outline)
 ├── sample_data/sample_sov.csv  synthetic test file (public landmark addresses + deliberate problems)
-├── dev_scripts/                smoke_single.py (live check), build_reference_data.py
+├── dev_scripts/                smoke_single.py, build_reference_data.py, build_state_boundaries.py
 ├── tests/                      163 unit tests, Census fully mocked
 ├── .streamlit/config.toml      telemetry off, upload limit
 ├── Dockerfile, requirements*.txt, .github/workflows/tests.yml
@@ -221,6 +221,6 @@ authentication / reverse proxy; the app has no login of its own. Outbound access
 * Address data is sent **only** to the U.S. Census Geocoder, using an internal row key rather than your Location ID.
 * No analytics or tracking libraries; Streamlit telemetry is disabled in `.streamlit/config.toml`.
 * Logs contain counts, status codes and error class names, never addresses, IDs or request URLs.
-* The map's background tiles are fetched by the user's browser from a public basemap provider (no exposure data, but the viewed area is visible to it). Untick **Show basemap tiles** to avoid third-party requests.
+* The map background defaults to **bundled U.S. state outlines** (Census cartographic boundaries, `data/reference/us_states.geojson`), so the default map makes no third-party requests. An optional **Online basemap tiles** mode loads tiles from a public provider (cartocdn.com) in the user's browser; no exposure data is sent, but the viewed area is visible to it, and corporate networks may block it.
 * Map tooltips escape HTML so a malicious cell value cannot inject markup.
 * `.gitignore` blocks `*.csv` / `*.xlsx` so exposure files are not committed; only the synthetic sample is allowed.
