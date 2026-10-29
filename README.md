@@ -42,6 +42,7 @@ us-exposure-geocoder/
 │   ├── qa_engine.py            rule-based QAStatus / QAReason / GeocodeResolution
 │   ├── pipeline.py             orchestration + dashboard summary (no UI code)
 │   ├── views.py                map / QA-table helpers (no UI code)
+│   ├── maps.py                 map styles, Folium builder, pydeck raster styles (no UI code)
 │   └── __init__.py
 ├── utils/constants.py          URLs, limits, labels, disclaimers, state tables
 ├── utils/logging_config.py     logging that never records addresses or URLs
@@ -84,7 +85,7 @@ streamlit run app.py
 ```
 
 Then open the URL shown (default http://localhost:8501) and upload `sample_data/sample_sov.csv` for a first test.
-The **Single Address** tab lets you test one address without a file.
+The **Single Address** page lets you test one address without a file.
 
 ## Census API usage
 
@@ -221,6 +222,6 @@ authentication / reverse proxy; the app has no login of its own. Outbound access
 * Address data is sent **only** to the U.S. Census Geocoder, using an internal row key rather than your Location ID.
 * No analytics or tracking libraries; Streamlit telemetry is disabled in `.streamlit/config.toml`.
 * Logs contain counts, status codes and error class names, never addresses, IDs or request URLs.
-* The map background defaults to **bundled U.S. state outlines** (Census cartographic boundaries, `data/reference/us_states.geojson`), so the default map makes no third-party requests. An optional **Online basemap tiles** mode loads tiles from a public provider (cartocdn.com) in the user's browser; no exposure data is sent, but the viewed area is visible to it, and corporate networks may block it.
+* **Maps (v0.2.0).** Two renderers: an interactive **Folium/Leaflet street map** (default for up to 5,000 points: layer switcher, hover tooltips, optional clustering) and a **pydeck** WebGL map for large portfolios. Base styles: OpenStreetMap (default), Esri streets, USGS satellite / topographic, plus optional Census **TIGERweb** state/county and tract boundary overlays. The default style loads tiles **in the user's browser** from public providers; no exposure data is sent, but the provider sees the viewed area and your network may block it. Folium also loads the Leaflet/Bootstrap/jQuery assets from public CDNs (jsdelivr, cdnjs, jquery.com, bootstrapcdn); the pydeck engine does not. Choose **Offline: state outlines only** (or set `DEFAULT_MAP_STYLE` in `utils/constants.py`) to avoid map tiles; note Folium CDN assets are still fetched, so use the pydeck engine for a fully third-party-free map. Check each tile provider's usage terms before heavy or commercial use (OSM's public tile server is for light use).
 * Map tooltips escape HTML so a malicious cell value cannot inject markup.
 * `.gitignore` blocks `*.csv` / `*.xlsx` so exposure files are not committed; only the synthetic sample is allowed.

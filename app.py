@@ -7,7 +7,6 @@ The only external destination for exposure data is the U.S. Census Geocoder.
 """
 from __future__ import annotations
 
-import base64
 import math
 import uuid
 from datetime import datetime, timezone
@@ -16,8 +15,10 @@ from pathlib import Path
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
+from streamlit_folium import st_folium
 
 from modules import file_handler as fh
+from modules import maps
 from modules.address_cleaner import clean_dataframe
 from modules.census_geocoder import CensusGeocoder
 from modules.pipeline import PipelineOptions, run_geocoding, summarize
@@ -28,22 +29,19 @@ from modules.views import (
     load_state_outline,
     map_points,
     qa_review_frame,
+    with_map_links,
     view_state_for,
 )
 from utils import constants as C
 from utils.logging_config import setup_logging
 
 APP_NAME = "US Exposure Geocoding & QA Tool"
-APP_VERSION = "0.1.1 (test build)"
+APP_VERSION = "0.3.0 (test build)"
 
 st.set_page_config(page_title=APP_NAME, page_icon="📍", layout="wide")
 setup_logging()
 
 NOT_MAPPED = "— not mapped —"
-# A style with no tile sources, as a data: URI, so offline mode makes no third-party requests.
-# (Streamlit falls back to Carto tiles when map_style / map_provider are simply omitted.)
-_BLANK = '{"version":8,"sources":{},"layers":[{"id":"bg","type":"background","paint":{"background-color":"#dde5ee"}}]}'
-BLANK_STYLE = "data:application/json;base64," + base64.b64encode(_BLANK.encode()).decode()
 MAX_TABLE_ROWS = 5_000
 
 
@@ -56,7 +54,7 @@ def _init_state() -> None:
         "read_key": None, "raw_df": None, "read_error": None,
         "mapping": None, "mapping_ok": False,
         "result": None, "result_id": None, "view": None, "summary": None,
-        "single_result": None,
+        "single_result": None, "map_choices": {},
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -116,55 +114,85 @@ st.caption(f"Version {APP_VERSION} · Upload an SOV → map columns → geocode 
 st.warning(f"**{C.CAT_DISCLAIMER_TITLE}.** {C.CAT_DISCLAIMER}", icon="⚠️")
 
 # ---------------------------------------------------------------------------
-# Sidebar: settings + privacy
+# Sidebar: step navigation (workflow order), then settings + privacy
 # ---------------------------------------------------------------------------
+PAGES = ["upload", "geocode", "dash", "map", "qa", "dl", "single", "about"]
+PAGE_LABELS = {
+    "upload": "1 · Upload & Map", "geocode": "2 · Geocode", "dash": "3 · Dashboard", "map": "4 · Map",
+    "qa": "5 · QA Review", "dl": "6 · Downloads", "single": "Single Address", "about": "About & Method",
+}
+st.session_state.setdefault("nav", "upload")
+
+
+def _go(page: str) -> None:
+    """Button callback: switch page (a widget's state may only be set before it is drawn)."""
+    st.session_state["nav"] = page
+
+
+def _page_label(key: str) -> str:
+    done = {"upload": st.session_state.mapping_ok, "geocode": st.session_state.result is not None}
+    ready = st.session_state.result is not None
+    mark = " ✓" if done.get(key) else (" 🔒" if key in ("dash", "map", "qa", "dl") and not ready else "")
+    return PAGE_LABELS[key] + mark
+
+
 with st.sidebar:
-    st.header("Geocoding settings")
-    chunk_size = st.number_input(
-        "Batch size (records per Census request)", min_value=1, max_value=C.BATCH_MAX_RECORDS,
-        value=C.DEFAULT_BATCH_SIZE, step=100,
-        help=f"Census allows up to {C.BATCH_MAX_RECORDS:,} per batch. Smaller batches are easier to "
-             "test and recover from. Batches run one after another, never in parallel.")
-    include_geo = st.checkbox("Request State / County / Tract / Block codes", value=True)
-    dedupe = st.checkbox("Geocode identical addresses once", value=False,
-                         help="Identical cleaned addresses are submitted once and the result is shared.")
-    fallback_failed = st.checkbox("Use area centroid when Census returns No_Match / Tie", value=False,
-                                  help="Rows with no street always use the fallback. This option also "
-                                       "applies it to rows that had a street but Census could not match.")
-    submit_insufficient = st.checkbox("Submit street-only rows to Census anyway", value=False,
-                                      help="Census needs street + ZIP, or street + city + state.")
-
-    opts_map = census_options()
-    bench_names = list(opts_map)
-    bench_default = bench_names.index(C.DEFAULT_BENCHMARK_NAME) if C.DEFAULT_BENCHMARK_NAME in bench_names else 0
-    benchmark = st.selectbox("Census benchmark", bench_names, index=bench_default,
-                             help="'Current' is a moving alias; the exact benchmark and vintage used "
-                                  "are recorded in every output row.")
-    vint_names = opts_map.get(benchmark) or [C.DEFAULT_VINTAGE_NAME]
-    vint_default = vint_names.index(C.DEFAULT_VINTAGE_NAME) if C.DEFAULT_VINTAGE_NAME in vint_names else 0
-    vintage = st.selectbox("Geography vintage", vint_names, index=vint_default,
-                           help="Used for the State/County/Tract/Block lookup.")
-
+    st.header("Steps")
+    page = st.radio("Navigate", PAGES, key="nav", format_func=_page_label, label_visibility="collapsed")
+    st.caption("✓ done · 🔒 available after geocoding")
     st.divider()
-    st.subheader("Privacy")
-    st.caption("Files are processed in memory and are not saved to disk. The only external service that "
-               "receives address data is the U.S. Census Geocoder. No analytics or tracking is used. "
-               "The default map background (state outlines) is bundled and makes no outside requests. The optional "
-               "online basemap loads tiles from a public provider in your browser; they contain no exposure data.")
+
+with st.sidebar:
+    with st.expander("⚙ Geocoding settings", expanded=False):
+        chunk_size = st.number_input(
+            "Batch size (records per Census request)", min_value=1, max_value=C.BATCH_MAX_RECORDS,
+            value=C.DEFAULT_BATCH_SIZE, step=100,
+            help=f"Census allows up to {C.BATCH_MAX_RECORDS:,} per batch. Smaller batches are easier to "
+                 "test and recover from. Batches run one after another, never in parallel.")
+        include_geo = st.checkbox("Request State / County / Tract / Block codes", value=True)
+        dedupe = st.checkbox("Geocode identical addresses once", value=False,
+                             help="Identical cleaned addresses are submitted once and the result is shared.")
+        fallback_failed = st.checkbox("Use area centroid when Census returns No_Match / Tie", value=False,
+                                      help="Rows with no street always use the fallback. This option also "
+                                           "applies it to rows that had a street but Census could not match.")
+        submit_insufficient = st.checkbox("Submit street-only rows to Census anyway", value=False,
+                                          help="Census needs street + ZIP, or street + city + state.")
+
+        opts_map = census_options()
+        bench_names = list(opts_map)
+        bench_default = bench_names.index(C.DEFAULT_BENCHMARK_NAME) if C.DEFAULT_BENCHMARK_NAME in bench_names else 0
+        benchmark = st.selectbox("Census benchmark", bench_names, index=bench_default,
+                                 help="'Current' is a moving alias; the exact benchmark and vintage used "
+                                      "are recorded in every output row.")
+        vint_names = opts_map.get(benchmark) or [C.DEFAULT_VINTAGE_NAME]
+        vint_default = vint_names.index(C.DEFAULT_VINTAGE_NAME) if C.DEFAULT_VINTAGE_NAME in vint_names else 0
+        vintage = st.selectbox("Geography vintage", vint_names, index=vint_default,
+                               help="Used for the State/County/Tract/Block lookup.")
+    with st.expander("🗺 Map style", expanded=False):
+        map_style = st.selectbox(
+            "Map style", maps.STYLE_NAMES,
+            index=maps.STYLE_NAMES.index(maps.DEFAULT_MAP_STYLE) if maps.DEFAULT_MAP_STYLE in maps.STYLE_NAMES else 0,
+            help="Street, satellite and topographic styles load tiles in your browser from a public provider. "
+                 "No exposure data is sent, but the provider can see the area you view. "
+                 "'Offline' uses bundled state outlines and makes no third-party requests.")
+
+    with st.expander("🔒 Privacy", expanded=False):
+        st.caption("Files are processed in memory and are not saved to disk. The only external service that "
+                   "receives address data is the U.S. Census Geocoder. No analytics or tracking is used. "
+                   "Online map styles load tiles in your browser from public providers (OpenStreetMap, Esri, USGS, "
+                   "Census TIGERweb); tiles contain no exposure data, but the provider sees the viewed area. "
+                   "Choose 'Offline' for no third-party map requests.")
 
 options = PipelineOptions(
     chunk_size=int(chunk_size), include_geographies=include_geo, dedupe_addresses=dedupe,
     fallback_for_failed=fallback_failed, submit_insufficient=submit_insufficient,
     benchmark_name=benchmark, vintage_name=vintage)
 
-tab_upload, tab_geocode, tab_dash, tab_map, tab_qa, tab_dl, tab_single, tab_about = st.tabs([
-    "1 · Upload & Map", "2 · Geocode", "3 · Dashboard", "4 · Map", "5 · QA Review",
-    "6 · Downloads", "Single Address", "About & Method"])
 
 # ===========================================================================
 # 1. Upload & column mapping
 # ===========================================================================
-with tab_upload:
+if page == "upload":
     st.subheader("Upload your Statement of Values")
     uploaded = st.file_uploader("CSV or XLSX", type=["csv", "xlsx"],
                                 help=f"Up to {C.MAX_UPLOAD_MB} MB / {C.MAX_ROWS:,} rows. "
@@ -223,10 +251,13 @@ with tab_upload:
         mapping = {}
         cols = st.columns(3)
         for i, field_name in enumerate(["location_id", "street", "city", "state", "zip", "county"]):
-            suggested = suggestions.get(field_name)
+            # Widgets on pages that are not shown lose their state, so remember the analyst's choice
+            saved = st.session_state.map_choices.get((st.session_state.upload_sig, field_name))
+            suggested = saved if saved in columns else suggestions.get(field_name)
             idx = columns.index(suggested) if suggested in columns else 0
             choice = cols[i % 3].selectbox(fh.MAPPING_LABELS[field_name], columns, index=idx,
                                            key=f"map_{field_name}_{st.session_state.upload_sig}")
+            st.session_state.map_choices[(st.session_state.upload_sig, field_name)] = choice
             mapping[field_name] = None if choice == NOT_MAPPED else choice
 
         report = fh.validate_mapping(raw_df, mapping)
@@ -241,12 +272,13 @@ with tab_upload:
                 preview = clean_dataframe(raw_df.head(10), mapping["street"], mapping.get("city"),
                                           mapping.get("state"), mapping.get("zip"), mapping.get("county"))
                 st.dataframe(preview, hide_index=True)
-            st.success("Mapping looks good. Continue to **2 · Geocode**.")
+            st.success("Mapping looks good.")
+            st.button("Next: 2 · Geocode →", type="primary", on_click=_go, args=("geocode",), key="next_geocode")
 
 # ===========================================================================
 # 2. Geocode
 # ===========================================================================
-with tab_geocode:
+if page == "geocode":
     st.subheader("Geocode with the U.S. Census Geocoder")
     raw_df, mapping_ok = st.session_state.raw_df, st.session_state.mapping_ok
     if raw_df is None or not mapping_ok:
@@ -286,7 +318,8 @@ with tab_geocode:
             s = st.session_state.summary["outcomes"]
             st.success(f"Done. {s['Successfully Geocoded']['count']:,} of {s['Total Locations']['count']:,} "
                        f"locations geocoded at street level ({s['Successfully Geocoded']['pct']:.1f}%). "
-                       "Open the Dashboard, Map and QA Review tabs.")
+                       "Use the steps on the left to open the Dashboard, Map and QA Review.")
+            st.button("Next: 3 · Dashboard →", type="primary", on_click=_go, args=("dash",), key="next_dash")
             for w in result.warnings:
                 st.warning(w)
             if result.column_collisions():
@@ -300,7 +333,7 @@ with tab_geocode:
 # ===========================================================================
 # 3. Dashboard
 # ===========================================================================
-with tab_dash:
+if page == "dash":
     st.subheader("Geocoding summary")
     result = st.session_state.result
     if result is None:
@@ -356,7 +389,7 @@ with tab_dash:
 # ===========================================================================
 # 4. Map
 # ===========================================================================
-with tab_map:
+if page == "map":
     st.subheader("Portfolio map")
     result, view = st.session_state.result, st.session_state.view
     if result is None:
@@ -372,66 +405,83 @@ with tab_map:
         sel_states = f1.multiselect("State", state_opts, default=state_opts, key=f"map_state_{rid}")
         sel_qa = f2.multiselect("QA status", qa_opts, default=qa_opts, key=f"map_qa_{rid}")
         sel_ms = f3.multiselect("Match type", ms_opts, default=ms_opts, key=f"map_ms_{rid}")
-        g1, g2 = st.columns([2, 1])
-        max_points = g1.slider("Maximum points drawn", 1_000, 200_000, 50_000, step=1_000,
+        g1, g2, g3 = st.columns([2, 2, 2])
+        engine_req = g1.selectbox(
+            "Map engine", maps.ENGINES, key=f"map_engine_{rid}",
+            help=f"Auto uses the interactive street map up to {C.FOLIUM_AUTO_MAX_POINTS:,} points and the "
+                 "WebGL large-portfolio map above that.")
+        overlays = g2.multiselect(
+            "Boundary overlays", list(maps.OVERLAYS), default=[], key=f"map_ov_{rid}",
+            help="Census boundary lines drawn over the street map (online styles only).")
+        max_points = g3.slider("Maximum points drawn", 1_000, 200_000, 50_000, step=1_000,
                                help="Large portfolios are randomly sampled for the map only. "
                                     "Tables and downloads always contain every record.")
-        bg_options = ["State outlines (offline)", "Online basemap tiles", "None"]
-        background = g2.radio(
-            "Map background", bg_options, index=0, key=f"map_bg_{rid}",
-            help="State outlines are bundled with the app: no third-party requests. Online tiles come "
-                 "from a public map provider (cartocdn.com), are fetched by your browser, and may be "
-                 "blocked on corporate networks.")
 
         # a state filter on rows without a state (e.g. invalid state) must not hide them
         states_arg = None if set(sel_states) == set(state_opts) else sel_states
         plot, available, sampled = map_points(
             view, qa_statuses=sel_qa, states=states_arg, match_statuses=sel_ms, max_points=max_points)
+        engine = maps.choose_engine(engine_req, available)
+        if engine == maps.ENGINE_FOLIUM and len(plot) > maps.folium_cap(max_points):
+            plot, available, sampled = map_points(
+                view, qa_statuses=sel_qa, states=states_arg, match_statuses=sel_ms,
+                max_points=maps.folium_cap(max_points))
+        offline = map_style == maps.OFFLINE
 
         if plot.empty:
             st.info("No located records match these filters. Records without coordinates are never plotted.")
         else:
             st.caption(f"Showing {len(plot):,} of {available:,} located records"
-                       + (" (random sample for performance)" if sampled else "") + ".")
-            layer = pdk.Layer(
-                "ScatterplotLayer", data=plot, get_position=["Longitude", "Latitude"],
-                get_fill_color="color", get_radius="radius", radius_units="pixels",
-                radius_min_pixels=3, radius_max_pixels=14, pickable=True, stroked=False)
-            layers = [layer]
-            outline = load_state_outline() if background == bg_options[0] else None
-            if background == bg_options[0] and outline is None:
-                st.warning("The bundled state outline file (data/reference/us_states.geojson) was not found; "
-                           "showing points only.")
-            if outline is not None:
-                outline_layer = pdk.Layer(
-                    "GeoJsonLayer", data=outline, stroked=True, filled=True, pickable=False,
-                    get_fill_color=[244, 246, 249, 255], get_line_color=[140, 150, 165, 255],
-                    line_width_min_pixels=1)
-                layers = [outline_layer, layer]
-            vs = view_state_for(plot)
-            if background == bg_options[1]:
-                deck_kwargs = dict(map_provider="carto", map_style="light")
+                       + (" (random sample for performance)" if sampled else "")
+                       + f" · engine: {engine.split(' (')[0]}.")
+            if overlays and offline:
+                st.info("Boundary overlays need an online map style; they are ignored in Offline mode.")
+
+            if engine == maps.ENGINE_FOLIUM:
+                cluster = st.checkbox("Cluster nearby points", value=False, key=f"map_cluster_{rid}",
+                                      help="Groups close points into numbered bubbles; zoom in to separate them.")
+                fmap = maps.build_folium_map(plot, map_style, overlays if not offline else (), cluster)
+                st_folium(fmap, height=620, use_container_width=True, returned_objects=[],
+                          key=f"fol_{rid}_{map_style}_{len(plot)}_{'-'.join(map(str, overlays))}_{cluster}")
             else:
-                deck_kwargs = dict(map_provider="carto", map_style=BLANK_STYLE)
-            st.pydeck_chart(pdk.Deck(
-                layers=layers,
-                initial_view_state=pdk.ViewState(latitude=vs["latitude"], longitude=vs["longitude"],
-                                                 zoom=vs["zoom"]),
-                tooltip={"html": TOOLTIP_HTML, "style": {"backgroundColor": "white", "color": "#222"}},
-                **deck_kwargs))
-            if background == bg_options[1]:
-                st.caption("If the background stays blank, your network is probably blocking "
-                           "basemaps.cartocdn.com. Switch to 'State outlines (offline)'.")
+                layer = pdk.Layer(
+                    "ScatterplotLayer", data=plot, get_position=["Longitude", "Latitude"],
+                    get_fill_color="color", get_radius="radius", radius_units="pixels",
+                    radius_min_pixels=3, radius_max_pixels=14, pickable=True, stroked=False)
+                layers = [layer]
+                if offline:
+                    outline = load_state_outline()
+                    if outline is None:
+                        st.warning("The bundled state outline file (data/reference/us_states.geojson) was not "
+                                   "found; showing points only.")
+                    else:
+                        layers = [pdk.Layer(
+                            "GeoJsonLayer", data=outline, stroked=True, filled=True, pickable=False,
+                            get_fill_color=[244, 246, 249, 255], get_line_color=[140, 150, 165, 255],
+                            line_width_min_pixels=1), layer]
+                vs = view_state_for(plot)
+                st.pydeck_chart(pdk.Deck(
+                    layers=layers, map_provider="carto",
+                    map_style=maps.pydeck_style_uri(map_style, overlays),
+                    initial_view_state=pdk.ViewState(latitude=vs["latitude"], longitude=vs["longitude"],
+                                                     zoom=vs["zoom"]),
+                    tooltip={"html": TOOLTIP_HTML, "style": {"backgroundColor": "white", "color": "#222"}}))
+
+            hosts = maps.hosts_for(map_style, overlays)
+            if hosts:
+                st.caption("Map tiles load in your browser from " + ", ".join(sorted(set(hosts)))
+                           + ". If the background stays blank, your network may block these hosts: switch the "
+                             "Map style in the sidebar, or choose Offline.")
             st.markdown(" &nbsp; ".join(
                 f"<span style='color:{c}'>●</span> {n}" for n, c in LEGEND), unsafe_allow_html=True)
             st.caption("Census points are interpolated along street address ranges and are not rooftop "
-                       "locations. Purple FALLBACK points are area centroids. "
-                       "Failed / no-coordinate records are not plotted.")
+                       "locations: judge them against the street map, not the building. Purple FALLBACK points "
+                       "are area centroids. Failed / no-coordinate records are not plotted.")
 
 # ===========================================================================
 # 5. QA Review
 # ===========================================================================
-with tab_qa:
+if page == "qa":
     st.subheader("QA review")
     result, view = st.session_state.result, st.session_state.view
     if result is None:
@@ -458,7 +508,14 @@ with tab_qa:
             st.write(f"**{len(filtered):,}** of {len(base):,} exception records")
             show_cols = ["LocationID", "OriginalAddress", "CensusMatchedAddress", "MatchStatus", "QAStatus",
                          "QAReason", "GeocodeResolution", "Latitude", "Longitude", "CleanFlags"]
-            st.dataframe(filtered[show_cols].head(MAX_TABLE_ROWS), hide_index=True)
+            st.dataframe(
+                with_map_links(filtered[show_cols].head(MAX_TABLE_ROWS)), hide_index=True,
+                column_config={
+                    "OpenStreetMap": st.column_config.LinkColumn("OpenStreetMap", display_text="Open in OSM"),
+                    "GoogleMaps": st.column_config.LinkColumn("Google Maps", display_text="Open in Google"),
+                })
+            st.caption("The map links open in a new browser tab and contain only the coordinates, "
+                       "not the address or Location ID; the provider sees them only when you click.")
             if len(filtered) > MAX_TABLE_ROWS:
                 st.caption(f"Table limited to the first {MAX_TABLE_ROWS:,} rows; the download contains all "
                            f"{len(filtered):,}.")
@@ -477,7 +534,7 @@ with tab_qa:
 # ===========================================================================
 # 6. Downloads
 # ===========================================================================
-with tab_dl:
+if page == "dl":
     st.subheader("Downloads")
     result = st.session_state.result
     if result is None:
@@ -519,7 +576,7 @@ with tab_dl:
 # ===========================================================================
 # Single address
 # ===========================================================================
-with tab_single:
+if page == "single":
     st.subheader("Single-address test")
     st.caption("Geocodes one address with the Census single-address service. The address you type is sent "
                "to the Census Bureau. Use public or test addresses when experimenting.")
@@ -551,7 +608,10 @@ with tab_single:
             st.write(f"**Matched address:** {rec['CensusMatchedAddress']}")
             st.caption(f"Geocode Source = {C.GEOCODE_SOURCE} · Coordinate Method = {C.COORDINATE_METHOD}. "
                        "Not a rooftop location. The single-address service does not report Exact / Non_Exact.")
-            st.map(pd.DataFrame({"lat": [rec["Latitude"]], "lon": [rec["Longitude"]]}), zoom=15)
+            st_folium(maps.single_point_map(rec["Latitude"], rec["Longitude"], rec["CensusMatchedAddress"] or "",
+                                            map_style),
+                      height=420, use_container_width=True, returned_objects=[],
+                      key=f"single_map_{map_style}_{rec['Latitude']}_{rec['Longitude']}")
             with st.expander("Address components and audit fields"):
                 st.json({"addressComponents": sr.best.components,
                          "record": {k: v for k, v in rec.items() if v is not None}})
@@ -563,7 +623,7 @@ with tab_single:
 # ===========================================================================
 # About
 # ===========================================================================
-with tab_about:
+if page == "about":
     st.subheader("About & method")
     st.markdown(f"""
 **Workflow:** Upload SOV → inspect → map columns → clean addresses → geocode (Census) → evaluate match quality →
