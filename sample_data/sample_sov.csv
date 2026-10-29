@@ -1,0 +1,21 @@
+LocID,Address,City,State,ZipCode,County,TIV,Occupancy
+L001,4600 Silver Hill Rd,Washington,DC,20233,,5000000,Office
+L002,1600 Pennsylvania Ave NW,Washington,DC,20500,,9000000,Office
+L003,350 Fifth Avenue,New York,NY,10118,,12000000,Office
+L004,233 S Wacker Dr,Chicago,IL,60606,,8000000,Office
+L005,1 Infinite Loop,Cupertino,CA,95014,,7000000,Office
+L006,99999 Zzyzx Qwerty Blvd,Springfield,IL,,,1000000,Warehouse
+L007,100 Main St,Springfield,IL,,,1500000,Retail
+L008,1 Main St,Boston,Massachusetts,2134,,2000000,Retail
+L009,,Austin,TX,78701,,3000000,Office
+L010,,Denver,CO,,,2500000,Office
+L011,,,IL,,Cook County,4000000,Warehouse
+L012,PO Box 123,Miami,FL,33101,,500000,Office
+L013,123 Main St,San Juan,PR,00901,,600000,Retail
+L014,4600 Silver Hill Rd,Washington,DC,20233,,5000000,Office
+L002,200 Independence Ave SW,Washington,DC,20201,,6000000,Office
+L016,233 S Wacker Dr,Chicago,IL,60601,,8000000,Office
+L017,350 Fifth Ave Ste 7700,New York,NY,10118,,3000000,Office
+L018,4600 Silver Hill Rd,Washington,ZZ,20233,,5000000,Office
+L019,   1600   Pennsylvania Ave NW  ,  Washington ,  District of Columbia ,20500,,9000000,Office
+L020,742 Evergreen Terrace,Springfield,,,,100000,Residential
