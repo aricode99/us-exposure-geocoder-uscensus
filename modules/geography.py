@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -81,6 +81,7 @@ class ReferenceData:
     counties: Dict[Tuple[str, str], List[Tuple[str, float, float]]]      # (state, norm) -> [(geoid, lat, lon)]
     state_bounds: Dict[str, Tuple[float, float, float, float]]      # state -> latmin, latmax, lonmin, lonmax
     source_note: str = ""
+    county_names: Dict[str, str] = field(default_factory=dict)       # 5-digit geoid -> normalised name
 
     @property
     def available(self) -> bool:
@@ -109,10 +110,12 @@ def load_reference(directory: Optional[str] = None) -> ReferenceData:
         zcta[str(z)] = (float(lat), float(lon), "" if pd.isna(st) else str(st), states)
 
     counties: Dict[Tuple[str, str], List[Tuple[str, float, float]]] = {}
+    county_names: Dict[str, str] = {}
     bounds_acc: Dict[str, List[float]] = {}
     for st, geoid, name, lat, lon in zip(co["state"], co["geoid"], co["name"], co["lat"], co["lon"]):
         la, lo = float(lat), float(lon)
         counties.setdefault((st, normalise_county_name(name)), []).append((geoid, la, lo))
+        county_names[str(geoid)] = normalise_county_name(name)
         b = bounds_acc.setdefault(st, [90.0, -90.0, 180.0, -180.0])
         b[0], b[1] = min(b[0], la), max(b[1], la)
         b[2], b[3] = min(b[2], lo), max(b[3], lo)
@@ -133,7 +136,7 @@ def load_reference(directory: Optional[str] = None) -> ReferenceData:
     src = base / "SOURCE.txt"
     if src.exists():
         note = src.read_text(encoding="utf-8")
-    return ReferenceData(zcta, places, counties, state_bounds, note)
+    return ReferenceData(zcta, places, counties, state_bounds, note, county_names)
 
 
 def gazetteer_year(ref: Optional[ReferenceData] = None) -> str:

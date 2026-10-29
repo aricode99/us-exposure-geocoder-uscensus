@@ -79,6 +79,43 @@ def _normalise_text(value: Any) -> str:
     return text
 
 
+_ALPHA_PART = re.compile(r"^[A-Za-z.' -]{2,40}$")
+_STATE_ZIP = re.compile(r"^[A-Za-z]{2}\s+\d{5}(?:-\d{4})?$")
+
+
+def strip_embedded_locality(street: str, city: str, state: str, zip_code: str, county: str = "") -> str:
+    """Remove a trailing ", City, ST, County, ZIP ..." that was pasted into the street column.
+
+    The street is trimmed only when one comma-separated part equals the City column (the anchor) and every
+    part after it is a known locality value (city, state, ZIP, county) or a single county-like word group.
+    Anything else, such as ", Apt 4B", leaves the street untouched.
+    """
+    parts = [p.strip() for p in street.split(",")]
+    if len(parts) < 3 or not city:
+        return street
+    cities = {re.sub(r"\s+", " ", city.lower())}
+    states = {state.lower()} | {n for n, a in C.STATE_NAME_TO_ABBR.items() if a == state}
+    counties = {re.sub(r"\s+", " ", county.lower()), re.sub(r"\s+", " ", county.lower()) + " county"} if county else set()
+    zips = {zip_code} if zip_code else set()
+
+    def known(part: str) -> bool:
+        low = re.sub(r"\s+", " ", part.lower())
+        if low in cities or low in states or low in counties or part in zips or part[:5] in zips:
+            return True
+        if _STATE_ZIP.match(part) and part[:2].lower() in states:
+            return True
+        return False
+
+    for k in range(1, len(parts)):
+        if re.sub(r"\s+", " ", parts[k].lower()) not in cities:
+            continue
+        rest = parts[k:]
+        if all(known(p) or (_ALPHA_PART.match(p) and not any(ch.isdigit() for ch in p)) for p in rest) \
+                and any(known(p) for p in rest[1:]):
+            return ", ".join(parts[:k])
+    return street
+
+
 def clean_street(value: Any) -> Tuple[str, List[str]]:
     original = _as_text(value)
     cleaned = _normalise_text(value)
@@ -155,6 +192,10 @@ def clean_address_row(street: Any, city: Any, state: Any, zip_code: Any,
     st, fst = clean_state(state)
     z, fz = clean_zip(zip_code)
     co, fco = clean_county(county)
+    trimmed = strip_embedded_locality(s, c, st, z, co)
+    if trimmed != s:
+        s = trimmed
+        fs = fs + ["STREET_LOCALITY_REMOVED"]
     return {
         "CleanStreet": s, "CleanCity": c, "CleanState": st, "CleanZIP": z, "CleanCounty": co,
         "CleanFlags": ";".join(fs + fc + fst + fz + fco),

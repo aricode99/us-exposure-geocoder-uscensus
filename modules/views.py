@@ -35,9 +35,10 @@ QA_COLORS: Dict[str, List[int]] = {
     C.QA_MEDIUM: [240, 180, 0, 215],
     C.QA_REVIEW: [230, 90, 0, 225],
     C.QA_FALLBACK: [130, 80, 200, 205],
+    C.QA_MANUAL: [31, 111, 235, 220],
 }
 LEGEND = [("HIGH", "#228b22"), ("MEDIUM", "#f0b400"), ("REVIEW", "#e65a00"),
-          ("FALLBACK (area centroid)", "#8250c8")]
+          ("FALLBACK (area centroid)", "#8250c8"), ("MANUAL (analyst-set)", "#1f6feb")]
 
 
 def match_status(geo: pd.DataFrame) -> pd.Series:

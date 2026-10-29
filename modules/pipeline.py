@@ -19,6 +19,8 @@ import pandas as pd
 from modules import address_cleaner
 from modules.census_geocoder import BatchRow, CensusGeocoder, CensusGeocoderError, GeocodeContext
 from modules.geography import ReferenceData, fallback_centroid, gazetteer_year, load_reference
+from modules.confidence import apply_confidence
+from modules.match_levels import apply_match_levels
 from modules.qa_engine import apply_qa
 from utils import constants as C
 
@@ -34,8 +36,11 @@ GEO_COLUMNS = [
     "TigerLineID", "TigerLineSide", "StateFIPS", "CountyFIPS", "CensusTract", "CensusBlock",
     "GeocodeRoute", "GeocodeResolution", "GeoResolutionBasis", "CensusGeographyLevel",
     "GeocodeSource", "CoordinateMethod", "QAStatus", "QAReason",
+    "GeoMatchLevelCode", "EnhancedGeoMatchLevelCode", "GeoMatchLevel",
+    "GeocodeConfidence", "ConfidenceBasis",
     "GeocodeProvider", "GeocodeBenchmark", "GeocodeBenchmarkID", "GeocodeVintage",
     "GeocodeVintageID", "GeocodeTimestamp", "GeocodeMethod", "GeocodeBatchNumber",
+    "AnalystEdit", "AnalystEditNote", "AnalystEditTimestamp", "AnalystEditCount",
 ]
 
 
@@ -62,6 +67,7 @@ class PipelineResult:
     started_utc: str = ""
     finished_utc: str = ""
     unique_addresses_submitted: int = 0
+    edit_log: List[Dict[str, Any]] = field(default_factory=list)
 
     # -- export -----------------------------------------------------------------
     def column_collisions(self) -> Dict[str, str]:
@@ -89,6 +95,10 @@ class PipelineResult:
 
     def mask_fallback(self) -> pd.Series:
         return self.geo["GeocodeResolution"].isin([C.RES_ZIP, C.RES_CITY, C.RES_COUNTY])
+
+    def mask_edited(self) -> pd.Series:
+        """Rows an analyst changed (address re-geocoded or coordinates set)."""
+        return self.geo["AnalystEdit"].notna()
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +286,11 @@ def run_geocoding(
     progress("Running QA", 0.90, "Comparing input with Census matched addresses")
     qa = apply_qa(work, ref)
     work = pd.concat([work, qa], axis=1)
+    work = pd.concat([work, apply_match_levels(work)], axis=1)
+    work = pd.concat([work, apply_confidence(work, ref)], axis=1)
+    for col in ("AnalystEdit", "AnalystEditNote", "AnalystEditTimestamp"):
+        work[col] = None
+    work["AnalystEditCount"] = 0
 
     # ---- 8. Audit fields ---------------------------------------------------------------------
     now = _utc_now()
@@ -326,8 +341,10 @@ def summarize(geo: pd.DataFrame) -> Dict[str, Any]:
     tie = census & (geo["CensusMatchIndicator"] == "Tie")
     no_match = census & (geo["CensusMatchIndicator"] == "No_Match")
     fallback = route == C.ROUTE_FALLBACK
+    manual = route == C.ROUTE_MANUAL
     out_scope = route == C.ROUTE_OUT_OF_SCOPE
-    other = total - int(geocoded.sum() + tie.sum() + no_match.sum() + fallback.sum() + out_scope.sum())
+    other = total - int(geocoded.sum() + tie.sum() + no_match.sum() + fallback.sum() + out_scope.sum()
+                        + manual.sum())
 
     def item(mask_or_count) -> Dict[str, Any]:
         count = int(mask_or_count.sum()) if hasattr(mask_or_count, "sum") else int(mask_or_count)
@@ -341,6 +358,7 @@ def summarize(geo: pd.DataFrame) -> Dict[str, Any]:
         "Tie": item(tie),
         "No Match": item(no_match),
         "Fallback (area centroid)": item(fallback),
+        "Analyst-set Coordinates": item(manual),
         "Out of Scope": item(out_scope),
         "Other Failed / Not Submitted": item(other),
     }
@@ -348,4 +366,9 @@ def summarize(geo: pd.DataFrame) -> Dict[str, Any]:
     qa = {s: item(int(qa_counts.get(s, 0))) for s in C.QA_ORDER}
     res_counts = geo["GeocodeResolution"].value_counts()
     resolution = {s: item(int(res_counts.get(s, 0))) for s in C.RESOLUTION_ORDER}
-    return {"outcomes": outcomes, "qa": qa, "resolution": resolution, "total": total}
+    lvl_counts = geo["GeoMatchLevel"].value_counts()
+    levels = {s: item(int(lvl_counts.get(s, 0))) for s in C.MATCH_LEVEL_ORDER}
+    conf_counts = geo["GeocodeConfidence"].value_counts()
+    confidence = {s: item(int(conf_counts.get(s, 0))) for s in C.CONF_ORDER}
+    return {"outcomes": outcomes, "qa": qa, "resolution": resolution, "match_levels": levels,
+            "confidence": confidence, "total": total}
