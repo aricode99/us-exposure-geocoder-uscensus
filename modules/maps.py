@@ -164,6 +164,10 @@ def build_folium_map(
     offline = style == OFFLINE or style not in STYLES
     m = folium.Map(location=[39.5, -98.35], zoom_start=4, tiles=None, control_scale=True,
                    prefer_canvas=True, zoom_control=True)
+    # Leaflet tooltips default to one unwrapped line, which gets clipped at the map edge: wrap and cap width.
+    m.get_root().header.add_child(folium.Element(
+        "<style>.leaflet-tooltip{white-space:normal !important;width:max-content;max-width:300px;"
+        "font-size:12px;line-height:1.35;overflow-wrap:anywhere;}</style>"))
     if offline:
         folium.Element(f"<style>.leaflet-container{{background:{_BLANK_BG};}}</style>").add_to(m.get_root().header)
         _add_outline(m, show=True)
@@ -186,7 +190,7 @@ def build_folium_map(
         folium.CircleMarker(
             location=(row.Latitude, row.Longitude), radius=float(row.radius) + 2, color="#ffffff", weight=1,
             fill=True, fill_color=colour, fill_opacity=0.9,
-            tooltip=folium.Tooltip(tooltip, sticky=True)).add_to(target)
+            tooltip=folium.Tooltip(tooltip, sticky=True, direction="auto")).add_to(target)
 
     if not plot.empty:
         south, north = float(plot["Latitude"].min()), float(plot["Latitude"].max())
